@@ -3,22 +3,26 @@
 #' 
 #' @description This script runs some local tests around a simple document DB.
 #' The source data directory is assumed to be an immediate child of the working
-#' directory named 'data'. If you want to import data from an alternate source,
-#' you should modify the global constant `dataDir`. If you want to inspect the
-#' results of execution, you can change the global constant `cleanBeforeExit` to
-#' FALSE.
+#' directory named 'data'. If no such directory entry is present, we generate
+#' a temporary directory, with dummy data. If you want to override this data
+#' source, you can pass an alternate path via the optional [data] argument of
+#' [executeTests()], or modify the global constant [dataDir].
+#' The global constant [cleanBeforeExit] is currently FALSE, to exercise more
+#' execution paths; consequently, you can manually review the results of
+#' execution (e.g. DB files) after running this script.
 #' 
-#' IMPORTANT: Some of the tests modify files in the current working directory.
+#' IMPORTANT: Some of these tests modify files in the current working directory.
 #' If the current directory contains a directory named "docDB", some errors
-#' may occur and any prior data therein may be lost.
+#' may occur (e.g. file permissions) and any prior data therein may be lost.
 #' 
-#' Error handling consists of warning output at the point of failure and flow
-#' control to fulfill desired execution to the maximum extent possible.
+#' Error handling consists of output at the point of failure and NULL/FALSE
+#' return values to allow flow control to fulfill desired execution to the
+#' maximum extent possible.
 #' 
 #' TODO:
-#'  * Improve error handling to use more stop/tryCatch and let caller decide
-#'    how to handle error output. Also figure out how to document that behavior,
-#'    per function.
+#'  * Improve error handling to use stop/warning and let caller decide
+#'    how to handle errors/output? If so, figure out how to document that
+#'    behavior, per function.
 #'  * Add command line arguments to override some constants:
 #'      - 'dataSource' arg to override [dataDir]
 #'      - 'cleanBeforeExit' flag to override [cleanBeforeExit]?
@@ -46,7 +50,7 @@ fileNames <- c(
   "guest-lecture.jpg #Northeastern #Khoury #Systems",
   "some source file.jpg #with #tags"
 )
-cleanBeforeExit <- TRUE # whether to delete DB contents
+cleanBeforeExit <- FALSE # whether to delete DB contents
 
 
 # --- functions
@@ -177,7 +181,15 @@ genObjPath <- function(root, tag) {
   sub <- str_replace(tag, "^#", "")
   tagPath <- file.path(root, sub)
   if (!dir.exists(tagPath)) {
-    # NOTE: inline output here makes specified verbose output messy...
+    if (file.exists(tagPath)) {
+      message(sprintf(
+        "Unable to generate object path! File exists: '%s'",
+        normalizePath(tagPath)
+      ))
+      return(NULL)
+    }
+    
+    # NOTE: inline output here makes the specified 'verbose' output messy...
     # printf("Initializing new tag path:\n\t%s", tagPath)
     dir.create(tagPath)
   }
@@ -250,7 +262,7 @@ storeObjs <- function(folder, root=rootDir, verbose=FALSE) {
       message(sprintf(
         "Unable to index the following tags at root '%s':\n\t%s",
         root,
-        paste(failedTags, collapse="\n\t")
+        paste(unique(failedTags), collapse="\n\t")
       ))
       return(FALSE)
     }
@@ -335,8 +347,10 @@ verifyDummy <- function(root) {
 #' Test a few simple DB functions
 #'
 #' @description
-#' `executeTests` tries to copy files from the `data` directory
-#' to a DB at `root`, initializing storage and tag paths as needed.
+#' `executeTests` tries to copy files from the given `data` directory
+#' to a DB at the given `root`, initializing storage and tag paths as needed.
+#' It will verify that DB contents include expected dummy data if `isDummy`
+#' is TRUE. Finally, it proceeds to cleanup after itself if `clean` is TRUE.
 #' 
 #' @param root The directory wherein DB data is stored. The default is `rootDir`.
 #' @param data The directory where source data is located The default is `dataDir`.
@@ -387,6 +401,40 @@ executeTests <- function(
   }
 }
 
+#' Print stacktrace to stderr and cancel
+#'
+#' @description
+#' `executeTests` tries to copy files from the given `data` directory
+#' to a DB at the given `root`, initializing storage and tag paths as needed.
+#' It will verify that DB contents include expected dummy data if `isDummy`
+#' is TRUE. Finally, it proceeds to cleanup after itself if `clean` is TRUE.
+#' 
+#' @param root The directory wherein DB data is stored. The default is `rootDir`.
+#' @param data The directory where source data is located The default is `dataDir`.
+#' @param verbose TRUE to print details while copying files. The default is FALSE.
+#' @param clean TRUE to delete all DB data. The default is FALSE.
+#' @param isDummy TRUE to indicate the DB is the "dummy DB". The default is FALSE.
+#' 
+#' @returns Logical value, representing success when TRUE.
+traceHandler <- function(cond) {
+  sink(stderr())
+  on.exit(sink(NULL))
+  message(sprintf('Cancelling execution due to unexpected %s:\n%s', class(cond)[1], cond))
+  traceback(3,1)
+}
+
+cancellationHandler <- function(code) {
+  function(cond) {
+    sink(stderr())
+    on.exit(sink(NULL))
+    message(sprintf(
+      "Execution failed due to unexpected %s! See detailed output above.",
+      class(cond)[1]
+    ))
+    return(code)
+  }
+}
+
 #' Run some tests to confirm DB functionality.
 #' 
 #' @returns None.
@@ -395,57 +443,57 @@ main <- function()
   # --- check the local file system for initial conditions prior to testing
   rootExtant <- dir.exists(rootDir)
   dataExtant <- dir.exists(dataDir)
-  tryCatch(
+  # use tryCatch to be sure we clean up dummy data as needed when finished
+  status <- tryCatch(
     {
-      # --- initialize the file system as needed for testing
-      if (rootExtant) {
-        printf("Default DB root found; proceeding...")
-      }
-      if (!dataExtant) {
-        # create the data directory and source data as needed
-        dir.create(dataDir)
-        for (fileName in fileNames) {
-          filePath = file.path(dataDir, fileName)
-          file.create(filePath)
-        }
-      }
-      
-      # --- test execution
-      # try default argument
-      executeTests(verbose=TRUE, clean=TRUE, isDummy=!dataExtant)
-      if (!cleanBeforeExit) {
-        printf("Re-populating DB for manual inspection (per global constant 'cleanBeforeExit')...")
-        executeTests(isDummy=!dataExtant)
-      }
+      # use local handlers to get useful stacktraces
+      withCallingHandlers(
+        {
+          # --- initialize the file system as needed for testing
+          if (rootExtant) {
+            printf('Default DB root found; proceeding to "take ownership"...')
+          }
+          if (!dataExtant) {
+            # create the data directory and source data as needed
+            dir.create(dataDir)
+            for (fileName in fileNames) {
+              filePath = file.path(dataDir, fileName)
+              file.create(filePath)
+            }
+          }
+          
+          # --- test execution
+          # this tests all functions, including cleanup
+          executeTests(verbose=TRUE, clean=TRUE, isDummy=!dataExtant)
+          if (!cleanBeforeExit) {
+            printf("Re-populating DB for manual inspection (per global constant 'cleanBeforeExit')...")
+            executeTests(isDummy=!dataExtant)
+          }
+        },
+        warning=traceHandler,
+        error=traceHandler
+      )
+      return(0)
     },
-    warning=function(cond) {
-      # TODO: figure out how to get useful stack traces
-      sink(stderr())
-      on.exit(sink(NULL))
-      message("Unexpected warning:")
-      message(cond)
-      # traceback(3)
-    },
-    error=function(cond) {
-      # TODO: figure out how to get useful stack traces
-      sink(stderr())
-      on.exit(sink(NULL))
-      message("Unexpected error:")
-      message(cond)
-      # traceback(3)
-    },
+    warning=cancellationHandler(1),
+    error=cancellationHandler(2),
     finally={
       # --- clean up local changes (e.g. delete dummy DB)
       if (!dataExtant) {
+        printf("Cleaning up dummy data in '%s'...", dataDir)
         unlink(dataDir, recursive=TRUE)
+        printf("Dummy data deleted.")
       }
     }
   )
+  return(status)
 }
 
 
 # --- main execution
-main()
-if (!interactive()) {
-  quit(status=0) # TODO: quit with non-zero exit status on error!
+status <- main()
+if (interactive()) {
+  printf('return status: %s', status)
+} else {
+  quit(status=status) # TODO: quit with non-zero exit status on error!
 }
