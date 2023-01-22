@@ -6,18 +6,19 @@
 #' directory named 'data'. If no such directory entry is present, we generate
 #' a temporary directory, with dummy data. If you want to override this data
 #' source, you can pass an alternate path via the optional [data] argument of
-#' [executeTests()], or modify the global constant [dataDir].
-#' The global constant [cleanBeforeExit] is currently FALSE, to exercise more
-#' execution paths; consequently, you can manually review the results of
-#' execution (e.g. DB files) after running this script.
+#' [executeTests()], or modify the global constant [dataDir]. We execute the
+#' tests twice to exercise more execution paths, with final cleanup governed by
+#' the global constant [cleanBeforeExit]. You can set this to FALSE if you want
+#' to manually review the results of execution (e.g. DB files) after execution.
 #' 
 #' IMPORTANT: Some of these tests modify files in the current working directory.
 #' If the current directory contains a directory named "docDB", some errors
 #' may occur (e.g. file permissions) and any prior data therein may be lost.
 #' 
-#' Error handling consists of output at the point of failure and NULL/FALSE
-#' return values to allow flow control to fulfill desired execution to the
-#' maximum extent possible.
+#' Error handling consists of output at the point of failure and cancellation
+#' upon encountering unexpected warning/error conditions. We try to detect some
+#' error conditions, returning NULL/FALSE values to support flow control and
+#' to fulfill desired execution to the maximum extent possible.
 #' 
 #' TODO:
 #'  * Improve error handling to use stop/warning and let caller decide
@@ -233,6 +234,9 @@ storeObjs <- function(folder, root=rootDir, verbose=FALSE) {
     if (verbose) {
       printf("File Details:")
     }
+    # TODO: Extract functions for one or bothe of these loops?
+    #       We would need to work out the interface, particularly around
+    #       error handling, but also to include the 'verbose' flag...
     for (srcFile in srcFiles) {
       filePath <- file.path(folder, srcFile)
       fileName = getFileName(srcFile)
@@ -251,7 +255,11 @@ storeObjs <- function(folder, root=rootDir, verbose=FALSE) {
           }
         }
         if (verbose) {
-          printf("\tcopying %s to %s", filePath, dstPath)
+          printf(
+            "\tcopying '%s' to '%s'",
+            srcFile,
+            file.path(basename(tagPath), fileName)
+          )
         }
         
         file.copy(filePath, dstPath, overwrite=TRUE)
@@ -365,11 +373,9 @@ executeTests <- function(
     clean=FALSE,
     isDummy=FALSE
 ) {
-  printf(
-    "Ingesting data at DB root '%s'%s...",
-    root,
-    if (verbose) " (verbose)" else ""
-  )
+  if (verbose) {
+    printf("Ingesting data at DB root '%s' (verbose)...", root)
+  }
   if (storeObjs(data, root, verbose=verbose)) {
     if (isDummy) {
       if (verifyDummy(root)) {
@@ -411,7 +417,7 @@ executeTests <- function(
 traceHandler <- function(cond) {
   sink(stderr())
   on.exit(sink(NULL))
-  message(sprintf('Cancelling execution due to unexpected %s:\n%s', class(cond)[1], cond))
+  message(sprintf('Unexpected %s:\n%s', class(cond)[1], cond))
   traceback(3,1)
 }
 
@@ -424,7 +430,7 @@ traceHandler <- function(cond) {
 #' 
 #' @param code The exit code to return.
 #' 
-#' @returns None.
+#' @returns A condition handler function.
 cancellationHandler <- function(code) {
   function(cond) {
     sink(stderr())
@@ -465,12 +471,16 @@ main <- function()
           }
           
           # --- test execution
-          # this tests all functions, including cleanup
+          # test all functions, including cleanup
           executeTests(verbose=TRUE, clean=TRUE, isDummy=!dataExtant)
+          # test all functions without verbose output
           if (!cleanBeforeExit) {
-            printf("Re-populating DB for manual inspection (per global constant 'cleanBeforeExit')...")
-            executeTests(isDummy=!dataExtant)
+            suffix <- " (preserving DB files, per global constant 'cleanBeforeExit')"
+          } else {
+            suffix <- ""
           }
+          printf("Re-populating DB without 'verbose' output%s...", suffix)
+          executeTests(clean=cleanBeforeExit, isDummy=!dataExtant)
         },
         warning=traceHandler,
         error=traceHandler
