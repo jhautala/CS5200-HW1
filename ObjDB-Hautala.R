@@ -134,9 +134,8 @@ configDB <- function(root=rootDir, path=getwd()) {
   
   rootPath <- file.path(path, root)
   if (dir.exists(rootPath)) {
-    # TODO: convert this to an error?
     printf(
-      "WARNING: Reusing extant directory '%s'",
+      "WARNING: Reusing extant directory: '%s'",
       normalizePath(rootPath)
     )
   } else if (file.exists(rootPath)) {
@@ -401,21 +400,14 @@ executeTests <- function(
   }
 }
 
-#' Print stacktrace to stderr and cancel
+#' Print stacktrace to stderr
 #'
 #' @description
-#' `executeTests` tries to copy files from the given `data` directory
-#' to a DB at the given `root`, initializing storage and tag paths as needed.
-#' It will verify that DB contents include expected dummy data if `isDummy`
-#' is TRUE. Finally, it proceeds to cleanup after itself if `clean` is TRUE.
+#' `traceHandler` prints a stacktrace for unexpected warnings/errors.
 #' 
-#' @param root The directory wherein DB data is stored. The default is `rootDir`.
-#' @param data The directory where source data is located The default is `dataDir`.
-#' @param verbose TRUE to print details while copying files. The default is FALSE.
-#' @param clean TRUE to delete all DB data. The default is FALSE.
-#' @param isDummy TRUE to indicate the DB is the "dummy DB". The default is FALSE.
+#' @param cond The warning or error that was not handled during execution.
 #' 
-#' @returns Logical value, representing success when TRUE.
+#' @returns None.
 traceHandler <- function(cond) {
   sink(stderr())
   on.exit(sink(NULL))
@@ -423,6 +415,16 @@ traceHandler <- function(cond) {
   traceback(3,1)
 }
 
+#' Create a condition handler to print warning/error conditions to stderr and
+#' return an exit code (i.e. the given [code])
+#'
+#' @description
+#' `cancellationHandler` creates a handler to print unexpected warning/error
+#' conditions and return an exit code.
+#' 
+#' @param code The exit code to return.
+#' 
+#' @returns None.
 cancellationHandler <- function(code) {
   function(cond) {
     sink(stderr())
@@ -475,8 +477,8 @@ main <- function()
       )
       return(0)
     },
-    warning=cancellationHandler(1),
-    error=cancellationHandler(2),
+    warning=cancellationHandler(2),
+    error=cancellationHandler(1),
     finally={
       # --- clean up local changes (e.g. delete dummy DB)
       if (!dataExtant) {
@@ -486,14 +488,19 @@ main <- function()
       }
     }
   )
+  
+  # print exit status
+  if (status != 0) {
+    sink(stderr())
+    on.exit(sink(NULL))
+  }
+  printf('return status: %s', status)
   return(status)
 }
 
 
 # --- main execution
 status <- main()
-if (interactive()) {
-  printf('return status: %s', status)
-} else {
-  quit(status=status) # TODO: quit with non-zero exit status on error!
+if (!interactive()) {
+  quit(status=status) # TODO: quit with non-zero exit code on error!
 }
